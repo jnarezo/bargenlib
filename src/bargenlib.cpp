@@ -6,23 +6,21 @@
 #include <vector>
 #include <stdexcept>
 
-// #include <iostream>
-
 namespace bargenlib
 {
 namespace
 {
-    // Bitmap Image Header Format
+    // BMP File Formatting Structs
     #pragma pack(push, 1)
     struct BMPFileHeader {
         uint16_t fileType = 0x4D42;
         uint32_t fileSize;
         uint16_t reserveA = 0;
         uint16_t reserveB = 0;
-        uint32_t headerOffset;
-        BMPFileHeader(int dataSize, bool hasAlpha = false):
-            fileSize((14+40+hasAlpha*84) + dataSize),
-            headerOffset(14+40+hasAlpha*84-1){}
+        uint32_t imageOffset;
+        BMPFileHeader(int dataSize):
+            fileSize((14+40+8) + dataSize),
+            imageOffset(14+40+8){}
     };
 
     struct BMPInfoHeader {
@@ -30,27 +28,21 @@ namespace
         uint32_t width;
         uint32_t height;
         uint16_t noPlanes = 1;
-        uint16_t bitDepth = 24;  // bpp
+        uint16_t bitDepth = 8;  // bpp
         uint32_t compression = 0;
         uint32_t imageSize = 0;
         uint32_t xPPM = 0;
         uint32_t yPPM = 0;
-        uint32_t noColorIndices = 0;
+        uint32_t noColorIndices = 2;  // Colors in palette
         uint32_t colorPriority = 0;
-        BMPInfoHeader(int width, int height, bool hasAlpha = false):
+        BMPInfoHeader(int width, int height):
             width(width),
-            height(height),
-            bitDepth(24 + hasAlpha*8),
-            compression(0 + hasAlpha*3){}
+            height(height){}
     };
 
-    struct BMPColorHeader {
-        uint32_t rBitmask = 0x0000FF00;
-        uint32_t gBitmask = 0x00FF0000;
-        uint32_t bBitmask = 0xFF000000;
-        uint32_t aBitmask = 0x000000FF;
-        uint32_t sRGB = 0x42475273;
-        uint32_t reserved[16]{0};
+    struct BMPColorTable {
+        uint32_t black = 0x00000000;
+        uint32_t white = 0x00FFFFFF;
     };
     #pragma pack(pop)
 
@@ -89,27 +81,21 @@ namespace
         E = 5,  // End
     };
 
-    void writeBMPHead(int dataSizeBytes, int width, int height, std::ofstream& of, bool hasAlpha) {
-        BMPFileHeader fileHeader(dataSizeBytes, hasAlpha);
-        BMPInfoHeader infoHeader(width, -height, hasAlpha);
-        BMPColorHeader colorHeader;
+    void writeBMPHead(int dataSizeBytes, int width, int height, std::ofstream& of) {
+        BMPFileHeader fileHeader(dataSizeBytes);
+        BMPInfoHeader infoHeader(width, -height);
+        BMPColorTable colorTable;
 
         of.write(reinterpret_cast<const char*>(&fileHeader), sizeof(fileHeader));
         of.write(reinterpret_cast<const char*>(&infoHeader), sizeof(infoHeader));
-        if (hasAlpha) {
-            of.write(reinterpret_cast<const char*>(&colorHeader), sizeof(colorHeader));
-        }
+        of.write(reinterpret_cast<const char*>(&colorTable), sizeof(colorTable));
     }
 
     void writeBar(std::vector<uint8_t>& data, int imgWidth, int& xPos, int barHeight, bool hasAlpha) {
-        int channels = (3 + static_cast<int>(hasAlpha));
-
         // Write a black line in RGB to the bitmap's data
         for (int y = 0; y < barHeight; y++) {
-            data[(xPos + y * imgWidth) * channels + 0] = 0; // r
-            data[(xPos + y * imgWidth) * channels + 1] = 0; // g
-            data[(xPos + y * imgWidth) * channels + 2] = 0; // b
-            if (hasAlpha) data[(xPos + y * imgWidth) * channels + 3] = 255;  // a
+            data[xPos + (y * imgWidth)] = 0;  // black
+            // if (hasAlpha) data[xPos + (y * imgWidth) + 1] = 255;  // opaque
         }
         xPos += 1;
     }
@@ -178,10 +164,10 @@ void ean_8(const std::vector<int>& code, const std::string& path, bool hasAlpha)
 
     // Proceed to use EAN-8 encoding.
     // Establish barcode bitmap data.
-    short width = 87;
+    short width = 88;  // BMP padding
     short height = 78;
-    short channels = 3 + hasAlpha;
-    std::vector<unsigned char> data((width * height) * channels, 255);
+    short channels = 1;
+    std::vector<uint8_t> data((width * height) * channels, 1);  // Init white
 
     // if (hasAlpha) {
     //     // Set every pixel's alpha channel to 0 (transparent)
@@ -193,7 +179,7 @@ void ean_8(const std::vector<int>& code, const std::string& path, bool hasAlpha)
     // Write the barcode's bitmap image to the path.
     std::ofstream of(path, std::ios_base::binary);
     if (of.is_open()) {
-        writeBMPHead(data.size(), width, height, of, hasAlpha);
+        writeBMPHead(data.size(), width, height, of);
         int linePos = 9; // Space padding
 
         // Add guard patterns and numbers.
@@ -234,10 +220,10 @@ void ean_13(const std::vector<int>& code, const std::string& path, bool hasAlpha
 
     // Proceed to use EAN-13 encoding.
     // Establish barcode bitmap data.
-    short width = 115;
+    short width = 116;  // BMP Padding
     short height = 78;
-    short channels = 3 + hasAlpha;
-    std::vector<unsigned char> data((width * height) * channels, 255);
+    short channels = 1;
+    std::vector<uint8_t> data((width * height) * channels, 1);  // Init white
 
     // if (hasAlpha) {
     //     // Set every pixel's alpha channel to 0 (transparent)
@@ -249,7 +235,7 @@ void ean_13(const std::vector<int>& code, const std::string& path, bool hasAlpha
     // Write the barcode's bitmap image to the path.
     std::ofstream of(path, std::ios_base::binary);
     if (of.is_open()) {
-        writeBMPHead(data.size(), width, height, of, hasAlpha);
+        writeBMPHead(data.size(), width, height, of);
 
         int linePos = 9; // Space padding
 
@@ -282,31 +268,4 @@ void ean_13(const std::vector<int>& code, const std::string& path, bool hasAlpha
     }
     of.close();
 }
-
-#ifdef DEBUG
-void test(bool hasAlpha, std::string path) {
-    int linePos = 0;
-    int width = 400;
-    int height = 400;
-    std::vector<unsigned char> data(width * height * (3 + hasAlpha), (char) 255);
-
-    std::ofstream of(path, std::ios_base::binary);
-    if (of.is_open()) {
-        writeBMPHead(data.size(), width, height, of, hasAlpha);
-        for (int i = 0; i < width; i++) {
-            std::cout << "Writing line. ";
-            writeBar(data, width, linePos, height, hasAlpha);
-            std::cout << "Wrote line.\n";
-        }
-        of.write(reinterpret_cast<const char*>(data.data()), data.size());
-        of.close();
-
-        std::cout << "Finished writing.\n";
-    } else {
-        throw std::runtime_error("Unable to open output.");
-    }
-
-    std::cout << "Test finished.\n";
-}
-#endif
 }
