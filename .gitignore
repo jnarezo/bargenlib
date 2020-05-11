@@ -33,3 +33,5 @@
 
 # Images
 *.bmp
+*.png
+src/barcodeTest.cpp

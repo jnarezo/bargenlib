@@ -7,30 +7,22 @@
 
 namespace bargenlib
 {
-    /**
-     * @brief Generates a UPC-A barcode bitmap image at path.
-     * 
-     * @param code 
-     * @param hasAlpha 
-     * @param path 
-     */
-    void upc_a(const std::vector<int>& code, const std::string& path, bool hasAlpha = true);
+    // Describes your barcode's image format.
+    //     BMP > bitmap (8-bpp)
+    //     PNG -> png (8-bpp)
+    //     PNGa -> png with Alpha (16-bpp)
+    enum FileType {
+        BMP = 0,
+        PNG = 1,
+        PNGa = 2,
+    };
 
-    /**
-     * @brief Generates a EAN-8 barcode bitmap image at path.
-     * 
-     * @param code 
-     * @param hasAlpha 
-     * @param path 
-     */
-    void ean_8(const std::vector<int>& code, const std::string& path, bool hasAlpha = true);
+    // Generates a UPC-A barcode bitmap image at path.
+    void upc_a(const std::vector<int>& code, const std::string& path, bargenlib::FileType format);
 
-    /**
-     * @brief Generates a EAN-13 barcode bitmap image at path.
-     * 
-     * @param code 
-     * @param hasAlpha 
-     * @param path 
-     */
-    void ean_13(const std::vector<int>& code, const std::string& path, bool hasAlpha = true);
+    // Generates a EAN-8 barcode bitmap image at path.
+    void ean_8(const std::vector<int>& code, const std::string& path, bargenlib::FileType format);
+
+    // Generates a EAN-13 barcode bitmap image at path.
+    void ean_13(const std::vector<int>& code, const std::string& path, bargenlib::FileType format);
 }

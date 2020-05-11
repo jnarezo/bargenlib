@@ -10,7 +10,7 @@ namespace bargenlib
 {
 namespace
 {
-    // BMP File Formatting Structs
+    // BMP/PNG File Formatting Structs
     #pragma pack(push, 1)
     struct BMPFileHeader {
         uint16_t fileType = 0x4D42;
@@ -41,8 +41,37 @@ namespace
     };
 
     struct BMPColorTable {
-        uint32_t black = 0x00000000;
         uint32_t white = 0x00FFFFFF;
+        uint32_t black = 0x00000000;
+    };
+
+    struct PNGFileHeader {
+        uint32_t PNGSig = 0x89504E47;
+        uint16_t CRLF = 0x0D0A;
+        uint8_t DOSStop = 0x1A;
+        uint8_t LF = 0x0A;
+    };
+
+    struct PNGInfoChunk {
+        uint32_t chunkType = 0x49484452;  // IHDR
+        uint32_t width;
+        uint32_t height;
+        uint8_t bitDepth;  // bpp
+        uint8_t colorType;
+        uint8_t compression = 0;
+        uint8_t filter = 0;
+        uint8_t interlace = 0;
+        PNGInfoChunk(int width, int height, bool hasAlpha = false):
+            width(width),
+            height(height),
+            bitDepth(8 + hasAlpha*8),
+            colorType(0 + hasAlpha*4){}
+    };
+
+    struct PNGEndChunk {
+        uint32_t chunkSize = 0;
+        uint32_t chunkType = 0x49454E44;  // IEND
+        uint32_t CRC = 0xAE426082;
     };
     #pragma pack(pop)
 
@@ -85,17 +114,42 @@ namespace
         BMPFileHeader fileHeader(dataSizeBytes);
         BMPInfoHeader infoHeader(width, -height);
         BMPColorTable colorTable;
-
         of.write(reinterpret_cast<const char*>(&fileHeader), sizeof(fileHeader));
         of.write(reinterpret_cast<const char*>(&infoHeader), sizeof(infoHeader));
         of.write(reinterpret_cast<const char*>(&colorTable), sizeof(colorTable));
     }
 
+    void writePNGHead(int width, int height, std::ofstream& of, bool hasAlpha) {
+        PNGFileHeader fileHeader;
+        uint32_t headLength = sizeof(fileHeader) - 4;
+        uint32_t headCRC;  // TODO: Add CRC on header
+        PNGInfoChunk infoHeader(width, height, hasAlpha);
+        uint32_t infoLength = sizeof(infoHeader) - 4;
+        uint32_t infoCRC;  // TODO: Add CRC on header
+
+        of.write(reinterpret_cast<const char*>(&headLength), 4);
+        of.write(reinterpret_cast<const char*>(&fileHeader), sizeof(fileHeader));
+        // of.write(reinterpret_cast<const char*>(&headCRC), 4);
+        of.write(reinterpret_cast<const char*>(&infoLength), 4);
+        of.write(reinterpret_cast<const char*>(&infoLength), 4);
+        // of.write(reinterpret_cast<const char*>(&infoCRC), 4);
+        of.write(reinterpret_cast<const char*>(&infoHeader), sizeof(infoHeader));
+    }
+
+    void writePNGEnd(std::ofstream& of) {
+        PNGEndChunk imageFooter;
+        of.write(reinterpret_cast<const char*>(&imageFooter), sizeof(imageFooter));
+    }
+
     void writeBar(std::vector<uint8_t>& data, int imgWidth, int& xPos, int barHeight, bool hasAlpha) {
         // Write a black line in RGB to the bitmap's data
         for (int y = 0; y < barHeight; y++) {
-            data[xPos + (y * imgWidth)] = 0;  // black
-            // if (hasAlpha) data[xPos + (y * imgWidth) + 1] = 255;  // opaque
+            if (hasAlpha) {
+                data[xPos + (y * imgWidth) + 1] = 255;  // remove transparency
+            }
+            else {
+                data[xPos + (y * imgWidth)] = 0;  // black
+            }
         }
         xPos += 1;
     }
@@ -111,7 +165,6 @@ namespace
 
     void writeNumUPC(std::vector<uint8_t>& data, int imgWidth,
             int& xPos, int barHeight, int num, BarRegion pos, bool hasAlpha = false) {
-        
         // Add the given UPC number correctly in the given region (L/G/R)
         if (pos == BarRegion::G) {
             for (int i = 6; i >= 0; i--) {
@@ -136,9 +189,11 @@ namespace
             }
         }
     }
+
+    // TODO: Add CRC for PNG chunk creation.
 }
 
-void upc_a(const std::vector<int>& code, const std::string& path, bool hasAlpha) {
+void upc_a(const std::vector<int>& code, const std::string& path, bargenlib::FileType format) {
     if (code.size() != 11 && code.size() != 12) {
         throw std::invalid_argument("A valid UPC-A code must be 11 or 12 digits.");
     }
@@ -151,10 +206,10 @@ void upc_a(const std::vector<int>& code, const std::string& path, bool hasAlpha)
     std::vector<int>::iterator it;
     it = eanCode.begin();
     eanCode.insert(it, 0);
-    ean_13(eanCode, path, hasAlpha);
+    ean_13(eanCode, path, format);
 }
 
-void ean_8(const std::vector<int>& code, const std::string& path, bool hasAlpha) {
+void ean_8(const std::vector<int>& code, const std::string& path, bargenlib::FileType format) {
     if (code.size() != 7 && code.size() != 8) {
         throw std::runtime_error("A valid EAN-8 code must be 7 or 8 digits.");
     }
@@ -164,17 +219,11 @@ void ean_8(const std::vector<int>& code, const std::string& path, bool hasAlpha)
 
     // Proceed to use EAN-8 encoding.
     // Establish barcode bitmap data.
-    short width = 88;  // BMP padding
+    short width = 87;  // BMP padding
     short height = 78;
-    short channels = 1;
-    std::vector<uint8_t> data((width * height) * channels, 1);  // Init white
-
-    // if (hasAlpha) {
-    //     // Set every pixel's alpha channel to 0 (transparent)
-    //     for (int i = 0; i < (width * height); i++) {
-    //         data[i * channels + 3] = 0;
-    //     }
-    // }
+    bool hasAlpha = (format == bargenlib::FileType::PNGa);
+    short channels = 1 + hasAlpha;
+    std::vector<uint8_t> data((width * height) * channels, 0);  // Blank init
 
     // Write the barcode's bitmap image to the path.
     std::ofstream of(path, std::ios_base::binary);
@@ -205,12 +254,16 @@ void ean_8(const std::vector<int>& code, const std::string& path, bool hasAlpha)
         // Add end guard pattern
         writeGuardUPC(data, width, linePos, height, E, hasAlpha);
 
+        // TODO: Write PNG image chunck
         of.write(reinterpret_cast<const char*>(data.data()), data.size());
+        if (format == bargenlib::FileType::PNG || format == bargenlib::FileType::PNGa) {
+            writePNGEnd(of);
+        }
     }
     of.close();
 }
 
-void ean_13(const std::vector<int>& code, const std::string& path, bool hasAlpha) {
+void ean_13(const std::vector<int>& code, const std::string& path, bargenlib::FileType format) {
     if (code.size() != 12 && code.size() != 13) {
         throw std::runtime_error("A valid EAN-13 code must be 12-13 digits.");
     }
@@ -220,17 +273,11 @@ void ean_13(const std::vector<int>& code, const std::string& path, bool hasAlpha
 
     // Proceed to use EAN-13 encoding.
     // Establish barcode bitmap data.
-    short width = 116;  // BMP Padding
+    short width = 115;  // BMP Padding
     short height = 78;
-    short channels = 1;
-    std::vector<uint8_t> data((width * height) * channels, 1);  // Init white
-
-    // if (hasAlpha) {
-    //     // Set every pixel's alpha channel to 0 (transparent)
-    //     for (int i = 0; i < (width * height); i++) {
-    //         data[i * channels + 3] = 0;
-    //     }
-    // }
+    bool hasAlpha = (format == bargenlib::FileType::PNGa);
+    short channels = 1 + hasAlpha;
+    std::vector<uint8_t> data((width * height) * channels, 0);  // Blank init
 
     // Write the barcode's bitmap image to the path.
     std::ofstream of(path, std::ios_base::binary);
@@ -264,7 +311,11 @@ void ean_13(const std::vector<int>& code, const std::string& path, bool hasAlpha
         // Add end guard pattern (4 cols)
         writeGuardUPC(data, width, linePos, height, E, hasAlpha);
 
+        // TODO: Write PNG image chunck
         of.write(reinterpret_cast<const char*>(data.data()), data.size());
+        if (format == bargenlib::FileType::PNG || format == bargenlib::FileType::PNGa) {
+            writePNGEnd(of);
+        }
     }
     of.close();
 }
