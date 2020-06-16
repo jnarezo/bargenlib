@@ -34,4 +34,9 @@
 # Images
 *.bmp
 *.png
-src/barcodeTest.cpp
+
+.vscode
+*.ps1
+test
+bin
+lib
