@@ -33,3 +33,10 @@
 
 # Images
 *.bmp
+*.png
+
+.vscode
+*.ps1
+test
+bin
+lib
