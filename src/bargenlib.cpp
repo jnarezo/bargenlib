@@ -45,8 +45,8 @@ namespace bargenlib
     };
 
     struct BMPColorTable {
-        uint32_t black = 0x00000000;
         uint32_t white = 0x00FFFFFF;
+        uint32_t black = 0x00000000;
     };
     #pragma pack(pop)
 
@@ -89,25 +89,49 @@ namespace bargenlib
         FileType fileType;
         int width;
         int height;
+        int bytesWidth;
         bool hasAlpha;
         int bitDepth;
         int channels;
-        ImageInfo(FileType fileType, int width, int height, bool hasAlpha,
+        ImageInfo(FileType fileType, int width, int height, int bytesWidth, bool hasAlpha,
                 int bitDepth, int channels):
             fileType(fileType),
             width(width),
             height(height),
+            bytesWidth(bytesWidth),
             hasAlpha(hasAlpha),
             bitDepth(bitDepth),
             channels(channels) {}
     };
 
+    void initImage(const ImageInfo &info, std::vector<uint8_t> &data) {
+        uint8_t defaultVal = 0;
+        switch (info.fileType) {
+            case PNG:
+                defaultVal = 255;
+                break;
+            case PNG_A:
+            case BMP:
+            default:
+                defaultVal = 0;
+                break;
+        }
+        data.resize(info.bytesWidth * info.height, defaultVal);
+    }
+
     void writeBar(const ImageInfo &info, std::vector<uint8_t> &data, const int &xPos) {
         // Write a black opaque line in to the bitmap data.
         for (int y = 0; y < info.height; y++) {
-            data[xPos + (y * info.width * info.channels)] = 0;
-            if (info.hasAlpha) {
-                data[xPos + (y * info.width * info.channels) + 1] = 0;
+            switch (info.fileType) {
+                case PNG_A:
+                    data[(xPos * info.channels) + (y * info.bytesWidth) + 1] = 255;
+                    break;
+                case PNG:
+                    data[(xPos * info.channels) + (y * info.bytesWidth)] = 0;
+                case BMP:
+                default:
+                    data[(xPos * info.channels) + (y * info.bytesWidth)] = 1;
+                    break;
             }
         }
     }
@@ -128,7 +152,7 @@ namespace bargenlib
         for (int i = 0; i < 7; i++) {
             int lineNum = (region == BarRegion::G) ? 6-i : i;
             uint8_t encoding = (region == BarRegion::L)?UpcEncodeTable[num]:~UpcEncodeTable[num];
-            if (((encoding << lineNum) & 0b01000000)) {
+            if (((encoding << lineNum) & 0b1000000)) {
                 bargenlib::writeBar(info, data, xPos);
             }
             xPos++;
@@ -137,8 +161,13 @@ namespace bargenlib
     
     void writePNG(const ImageInfo &info, const std::vector<uint8_t> &data, const std::string &path) {
         std::vector<uint8_t> pngImage;
-        unsigned int error = lodepng::encode(pngImage, data, info.width, info.height,
-                LodePNGColorType::LCT_GREY, info.bitDepth);
+        unsigned int error = lodepng::encode(
+                pngImage,
+                data,
+                info.width,
+                info.height,
+                (info.hasAlpha) ? LodePNGColorType::LCT_GREY_ALPHA : LodePNGColorType::LCT_GREY,
+                info.bitDepth);
         if (!error) lodepng::save_file(pngImage, path);
     }
 
@@ -169,145 +198,121 @@ namespace bargenlib
                 break;
         }
     }
+
+    void encodeEAN8(ImageInfo &info, std::vector<uint8_t> &data, const std::vector<int> &code) {
+        if (code.size() != 7 && code.size() != 8) {
+            throw std::runtime_error("A valid EAN-8 code must be 7 or 8 digits.");
+        }
+        for (int n : code) {
+            if (n < 0 || n > 9) throw std::runtime_error("An EAN-8 digit must be 0-9.");
+        }
+
+        info.width = 88;  // padding, divisible by 4
+        info.height = 78;
+        info.bytesWidth = info.width * info.channels * (info.bitDepth / 8);
+        initImage(info, data);
+        int linePos = 9; // Space padding
+
+        // Add guard patterns and numbers.
+        writeGuardUPC(info, data, linePos, S);
+        for (int n = 0; n < 4; n++) {
+            writeNumUPC(info, data, linePos, code[n], L);
+        }
+        writeGuardUPC(info, data, linePos, M);
+        for (int n = 4; n < code.size(); n++) {
+            writeNumUPC(info, data, linePos, code[n], R);
+        }
+
+        // Add check digit, if neccessary
+        if (code.size() == 7) {
+            int remainder = ((3 * (code[0] + code[2] + code[4] + code[6])
+                                    + (code[1] + code[3] + code[5])) % 10);
+            int checkDigit = (10 - remainder) % 10;
+            writeNumUPC(info, data, linePos, checkDigit, R);
+        }
+
+        // Add end guard pattern
+        writeGuardUPC(info, data, linePos, E);
     }
 
-void encode_ean_8(ImageInfo &info, std::vector<uint8_t> &data, const std::vector<int> &code) {
-    if (code.size() != 7 && code.size() != 8) {
-        throw std::runtime_error("A valid EAN-8 code must be 7 or 8 digits.");
-    }
-    for (int n : code) {
-        if (n < 0 || n > 9) throw std::runtime_error("An EAN-8 digit must be 0-9.");
+    void encodeEAN13(ImageInfo &info, std::vector<uint8_t> &data, const std::vector<int> &code) {
+        if (code.size() != 12 && code.size() != 13) {
+            throw std::runtime_error("A valid EAN-13 code must be 12-13 digits.");
+        }
+        for (int n : code) {
+            if (n < 0 || n > 9) throw std::runtime_error("An EAN-13 digit must be 0-9.");
+        }
+
+        info.width = 116;  // padding, divisible by 4
+        info.height = 78;
+        info.bytesWidth = info.width * info.channels * (info.bitDepth / 8);
+        initImage(info, data);
+        int linePos = 9; // Space padding
+
+        // Add guard patterns and numbers.
+        writeGuardUPC(info, data, linePos, S);
+        for (int n = 1; n < 7; n++) {
+            // Determine parity type, G (even) or L (odd), then write
+            BarRegion region = (EanParityPattern[code[0]] << (n-1)) & (0b100000) ? G : L;
+            writeNumUPC(info, data, linePos, code[n], region);
+        }
+        writeGuardUPC(info, data, linePos, M);
+        for (int n = 7; n < code.size(); n++) {
+            writeNumUPC(info, data, linePos, code[n], R);
+        }
+
+        // Add check digit, if neccessary
+        if (code.size() == 12) {
+            int remainder = ((3 * (code[1] + code[3] + code[5] + code[7] + code[9] + code[11])
+                            + (code[0] + code[2] + code[4] + code[6] + code[8] + code[10])) % 10);
+            int checkDigit = (10 - remainder) % 10;
+            writeNumUPC(info, data, linePos, checkDigit, R);
+        }
+
+        // Add end guard pattern (4 cols)
+        writeGuardUPC(info, data, linePos, E);
     }
 
-    info.width = 88;  // padding, divisible by 4
-    info.height = 78;
-    uint8_t defaultVal = 0;
-    switch (info.fileType) {
-        case PNG:
-        case PNG_A:
-            defaultVal = 255;
-            break;
-        case BMP:
-        default:
-            defaultVal = 1;
-            break;
+    void encodeUPCA(ImageInfo &info, std::vector<uint8_t> &data, const std::vector<int> &code) {
+        if (code.size() != 11 && code.size() != 12) {
+            throw std::invalid_argument("A valid UPC-A code must be 11 or 12 digits.");
+        }
+        for (int n : code) {
+            if (n < 0 || n > 9) throw std::invalid_argument("A UPC-A digit must be 0-9.");
+        }
+        // UPC-A is equivalent to EAN-13 with international code 0.
+        std::vector<int> eanCode(code);
+        std::vector<int>::iterator iterator;
+        iterator = eanCode.begin();
+        eanCode.insert(iterator, 0);
+        encodeEAN13(info, data, eanCode);
     }
-    data.resize((info.width * info.height) * info.channels, defaultVal);
-    int linePos = 9; // Space padding
-
-    // Add guard patterns and numbers.
-    writeGuardUPC(info, data, linePos, S);
-    for (int n = 0; n < 4; n++) {
-        writeNumUPC(info, data, linePos, code[n], L);
     }
-    writeGuardUPC(info, data, linePos, M);
-    for (int n = 4; n < code.size(); n++) {
-        writeNumUPC(info, data, linePos, code[n], R);
-    }
-
-    // Add check digit, if neccessary
-    if (code.size() == 7) {
-        int remainder = ((3 * (code[0] + code[2] + code[4] + code[6])
-                                + (code[1] + code[3] + code[5])) % 10);
-        int checkDigit = (10 - remainder) % 10;
-
-        // Write check digit
-        writeNumUPC(info, data, linePos, checkDigit, R);
-    }
-
-    // Add end guard pattern
-    writeGuardUPC(info, data, linePos, E);
-}
-
-void encode_ean_13(ImageInfo &info, std::vector<uint8_t> &data, const std::vector<int> &code) {
-    if (code.size() != 12 && code.size() != 13) {
-        throw std::runtime_error("A valid EAN-13 code must be 12-13 digits.");
-    }
-    for (int n : code) {
-        if (n < 0 || n > 9) throw std::runtime_error("An EAN-13 digit must be 0-9.");
-    }
-
-    info.width = 116;  // padding, divisible by 4
-    info.height = 78;
-    uint8_t defaultVal = 0;
-    switch (info.fileType) {
-        case PNG:
-        case PNG_A:
-            defaultVal = 255;
-            break;
-        case BMP:
-        default:
-            defaultVal = 1;
-            break;
-    }
-    data.resize((info.width * info.height) * info.channels, defaultVal);
-    int linePos = 9; // Space padding
-
-    // Add guard patterns and numbers.
-    writeGuardUPC(info, data, linePos, S);
-    for (int n = 1; n < 7; n++) {
-        // Determine parity type, G (even) or L (odd), then write
-        BarRegion region = (EanParityPattern[code[0]] << (n-1)) & (0b100000) ? G : L;
-        writeNumUPC(info, data, linePos, code[n], region);
-    }
-    writeGuardUPC(info, data, linePos, M);
-    for (int n = 7; n < code.size(); n++) {
-        writeNumUPC(info, data, linePos, code[n], R);
-    }
-
-    // Add check digit, if neccessary
-    if (code.size() == 12) {
-        int remainder = ((3 * (code[1] + code[3] + code[5] + code[7] + code[9] + code[11])
-                        + (code[0] + code[2] + code[4] + code[6] + code[8] + code[10])) % 10);
-        int checkDigit = (10 - remainder) % 10;
-
-        // Write check digit
-        writeNumUPC(info, data, linePos, checkDigit, R);
-    }
-
-    // Add end guard pattern (4 cols)
-    writeGuardUPC(info, data, linePos, E);
-}
-
-void encode_upc_a(ImageInfo &info, std::vector<uint8_t> &data, const std::vector<int> &code) {
-    if (code.size() != 11 && code.size() != 12) {
-        throw std::invalid_argument("A valid UPC-A code must be 11 or 12 digits.");
-    }
-    for (int n : code) {
-        if (n < 0 || n > 9) throw std::invalid_argument("A UPC-A digit must be 0-9.");
-    }
-    // UPC-A is equivalent to EAN-13 with international code 0.
-    std::vector<int> eanCode(code);
-    std::vector<int>::iterator iterator;
-    iterator = eanCode.begin();
-    eanCode.insert(iterator, 0);
-    encode_ean_13(info, data, eanCode);
-}
 
 void save(const std::vector<int> &code, const std::string &path,
-        CodeType codeType, FileType fileType) {
+        Encoding codeType, FileType fileType) {
     ImageInfo *info;
     switch (fileType) {
         case PNG_A:
-            info = &ImageInfo(fileType, 0, 0, true, 16, 2);
+            info = &ImageInfo(fileType, 0, 0, 0, true, 8, 2);
             break;
         case PNG:
         case BMP:
         default:
-            info = &ImageInfo(fileType, 0, 0, false, 8, 1);
+            info = &ImageInfo(fileType, 0, 0, 0, false, 8, 1);
             break;
     }
     std::vector<uint8_t> data;
     switch (codeType) {
         case EAN_8:
-            encode_ean_8(*info, data, code);
-            break;
-        case UPC_A:
-            encode_upc_a(*info, data, code);
+            encodeEAN8(*info, data, code);
             break;
         case EAN_13:
+            encodeEAN13(*info, data, code);
+            break;
+        case UPC_A:
         default:
-            encode_ean_13(*info, data, code);
+            encodeUPCA(*info, data, code);
             break;
     }
     writeImage(*info, data, path, fileType);
