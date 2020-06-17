@@ -56,4 +56,4 @@ Credit to [lodepng](https://github.com/lvandeve/lodepng) for supplying the code 
 
 You may want to take a look at `lodepng.h` or the [lodepng](https://github.com/lvandeve/lodepng)
 repository for additional compiler flags to disable compilation of unused sections of **lodepng**
-**at your own discretion**, like the decoder.
+*at your own discretion*, like the decoder.
